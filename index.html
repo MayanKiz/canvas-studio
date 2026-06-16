@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Air Draw — Gesture-Based Doodler</title>
+  <meta name="description" content="Draw in the air with hand gestures using computer vision. A gesture-based interactive doodler powered by MediaPipe." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/index.css" />
+</head>
+<body>
+  <!-- Loading Screen -->
+  <div id="loading-screen">
+    <div class="loader-content">
+      <img src="/logo.png" alt="Air Draw" class="loader-logo" />
+      <p class="loader-subtitle">Initializing hand tracking...</p>
+      <div class="loader-bar">
+        <div class="loader-bar-fill"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="hidden">
+    <!-- Video (hidden, used by MediaPipe) -->
+    <video id="webcam" autoplay playsinline></video>
+
+    <!-- Canvas Stack -->
+    <canvas id="camera-canvas"></canvas>
+    <canvas id="drawing-canvas"></canvas>
+    <canvas id="ui-canvas"></canvas>
+
+    <!-- Gesture Status HUD -->
+    <div id="gesture-hud">
+      <div id="gesture-icon">✊</div>
+      <div id="gesture-label">Ready</div>
+    </div>
+
+    <!-- Toolbar -->
+    <div id="toolbar">
+      <div class="toolbar-section">
+        <label class="toolbar-label">Colors</label>
+        <div id="color-palette">
+          <button class="color-swatch active" data-color="#00f0ff" style="--swatch-color: #00f0ff" title="Cyan"></button>
+          <button class="color-swatch" data-color="#ff00e5" style="--swatch-color: #ff00e5" title="Magenta"></button>
+          <button class="color-swatch" data-color="#39ff14" style="--swatch-color: #39ff14" title="Lime"></button>
+          <button class="color-swatch" data-color="#4d6dff" style="--swatch-color: #4d6dff" title="Electric Blue"></button>
+          <button class="color-swatch" data-color="#ff2d6b" style="--swatch-color: #ff2d6b" title="Hot Pink"></button>
+          <button class="color-swatch" data-color="#ffd700" style="--swatch-color: #ffd700" title="Gold"></button>
+          <button class="color-swatch" data-color="#b400ff" style="--swatch-color: #b400ff" title="Purple"></button>
+          <button class="color-swatch" data-color="#ffffff" style="--swatch-color: #ffffff" title="White"></button>
+        </div>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-section">
+        <label class="toolbar-label" for="thickness-slider">Thickness</label>
+        <input type="range" id="thickness-slider" min="2" max="24" value="6" />
+        <span id="thickness-value" class="slider-value">6px</span>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-section">
+        <label class="toolbar-label" for="glow-slider">Glow</label>
+        <input type="range" id="glow-slider" min="0" max="100" value="60" />
+        <span id="glow-value" class="slider-value">60%</span>
+      </div>
+
+      <div class="toolbar-divider"></div>
+
+      <div class="toolbar-actions">
+        <button id="btn-undo" class="toolbar-btn" title="Undo last stroke">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12.5 8c-2.65 0-5.05 1.04-6.83 2.73L2.5 7.5v9h9l-3.19-3.19c1.3-1.3 3.1-2.11 5.19-2.11 3.45 0 6.35 2.37 7.16 5.57l2.27-.71C21.69 12.11 17.52 8 12.5 8z" fill="currentColor"/></svg>
+        </button>
+        <button id="btn-clear" class="toolbar-btn" title="Clear canvas">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12z" fill="currentColor"/></svg>
+        </button>
+        <button id="btn-camera-toggle" class="toolbar-btn active" title="Toggle camera view">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" fill="currentColor"/><circle cx="12" cy="12" r="3" fill="currentColor" class="cam-dot"/></svg>
+        </button>
+        <button id="btn-save" class="toolbar-btn" title="Save as PNG">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2v9.67z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Camera Toggle Indicator -->
+    <div id="camera-mode-indicator">
+      <span id="camera-mode-text">Camera ON</span>
+    </div>
+
+
+  </div>
+
+  <!-- Onboarding Modal -->
+  <div id="onboarding-modal" class="hidden">
+    <div class="onboarding-content">
+      <img src="/logo.png" alt="Air" class="onboarding-logo" />
+      <h2 class="onboarding-title">How to Play</h2>
+      <div class="onboarding-grid">
+        <div class="onboarding-item">
+          <div class="onboarding-icon">☝️</div>
+          <div class="onboarding-text">
+            <strong>Draw</strong>
+            <span>Point index finger to draw</span>
+          </div>
+        </div>
+        <div class="onboarding-item">
+          <div class="onboarding-icon">✋</div>
+          <div class="onboarding-text">
+            <strong>Erase</strong>
+            <span>Sweep open palm to erase</span>
+          </div>
+        </div>
+        <div class="onboarding-item">
+          <div class="onboarding-icon">🤏</div>
+          <div class="onboarding-text">
+            <strong>Move</strong>
+            <span>Pinch to grab & reposition</span>
+          </div>
+        </div>
+        <div class="onboarding-item">
+          <div class="onboarding-icon">✊</div>
+          <div class="onboarding-text">
+            <strong>Idle</strong>
+            <span>Close fist to rest</span>
+          </div>
+        </div>
+      </div>
+      <button id="btn-start" class="btn-primary">Let's Go!</button>
+    </div>
+  </div>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

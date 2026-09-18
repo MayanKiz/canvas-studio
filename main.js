@@ -6,6 +6,10 @@
 // ── State ──────────────────────────────────────────────────────
 const state = {
   handLandmarker: null,
+  trackerWorker: null,
+  workerReady: false,
+  workerBusy: false,
+  workerFailed: false,
   webcamStream: null,
   isReady: false,
   // Drawing
@@ -126,6 +130,35 @@ window.addEventListener('resize', () => {
 
 // ── MediaPipe Loading ──────────────────────────────────────────
 async function initMediaPipe() {
+  if (window.Worker && window.createImageBitmap) {
+    try {
+      const worker = new Worker(new URL('./hand-tracker-worker.js', import.meta.url), { type: 'module' });
+      state.trackerWorker = worker;
+      worker.onmessage = handleWorkerMessage;
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Hand tracker worker timed out')), 15000);
+        worker.addEventListener('message', function onReady(event) {
+          if (event.data?.type === 'ready') {
+            clearTimeout(timeout);
+            worker.removeEventListener('message', onReady);
+            resolve();
+          } else if (event.data?.type === 'error') {
+            clearTimeout(timeout);
+            worker.removeEventListener('message', onReady);
+            reject(new Error(event.data.message));
+          }
+        });
+        worker.postMessage({ type: 'init' });
+      });
+      state.workerReady = true;
+      return true;
+    } catch (error) {
+      console.warn('Worker tracking unavailable; using main-thread fallback.', error);
+      state.trackerWorker?.terminate();
+      state.trackerWorker = null;
+    }
+  }
+
   // Dynamic import from CDN
   const { FilesetResolver, HandLandmarker } = await import(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.mjs'
@@ -741,11 +774,63 @@ function drawCursorIndicator(ctx, landmarks, gesture) {
   }
 }
 
+function processTrackingResult(landmarks) {
+  if (landmarks && landmarks.length > 0) {
+    const hand = landmarks[0];
+    state.latestLandmarks = hand;
+    const rawGesture = detectGesture(hand);
+    const gesture = stabilizeGesture(rawGesture);
+
+    if (!state.isModalOpen) {
+      if (gesture === 'index_finger') handleDrawing(hand);
+      if (gesture === 'open_palm') handleErasing(hand);
+      if (gesture === 'pinch') handleGrab(hand);
+
+      if (gesture !== 'index_finger' && state.currentStroke && state.currentStroke.points.length > 1) {
+        state.strokes.push({ ...state.currentStroke });
+        state.currentStroke = null;
+      }
+    }
+  } else {
+    state.latestLandmarks = null;
+    if (state.currentGesture !== 'none') {
+      onGestureChange(state.currentGesture, 'none');
+      state.currentGesture = 'none';
+    }
+    if (state.currentStroke && state.currentStroke.points.length > 1) {
+      state.strokes.push({ ...state.currentStroke });
+      state.currentStroke = null;
+      redrawStrokes();
+    }
+  }
+}
+
+function handleWorkerMessage(event) {
+  if (event.data?.type === 'result') {
+    state.workerBusy = false;
+    processTrackingResult(event.data.landmarks);
+  } else if (event.data?.type === 'error') {
+    state.workerBusy = false;
+    state.workerFailed = true;
+    console.warn('Hand tracker worker error:', event.data.message);
+  }
+}
+
+function requestWorkerDetection(video, timestamp) {
+  if (!state.trackerWorker || !state.workerReady || state.workerBusy || video.readyState < 2) return;
+  state.workerBusy = true;
+  createImageBitmap(video).then((bitmap) => {
+    state.trackerWorker.postMessage({ type: 'detect', bitmap, timestamp }, [bitmap]);
+  }).catch(() => {
+    state.workerBusy = false;
+  });
+}
+
 // ── Main Render Loop ───────────────────────────────────────────
 let lastVideoTime = -1;
 
 function renderLoop() {
-  if (!state.handLandmarker || !state.isReady) {
+  if ((!state.handLandmarker && !state.workerReady) || !state.isReady) {
     requestAnimationFrame(renderLoop);
     return;
   }
@@ -754,7 +839,7 @@ function renderLoop() {
   const now = performance.now();
 
   // Keep camera inference and canvas work within a predictable phone-safe budget.
-  const frameInterval = state.lowPower ? 42 : 33;
+  const frameInterval = 33;
   if (now - state.lastRenderAt < frameInterval) {
     requestAnimationFrame(renderLoop);
     return;
@@ -776,45 +861,22 @@ function renderLoop() {
   // Clear UI overlay
   uiCtx.clearRect(0, 0, state.width, state.height);
 
-  // Process hand landmarks
+  // Request hand landmarks without blocking the render thread.
   if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-
-    const results = state.handLandmarker.detectForVideo(video, now);
-
-    if (results.landmarks && results.landmarks.length > 0) {
-      const landmarks = results.landmarks[0];
-      const rawGesture = detectGesture(landmarks);
-      const gesture = stabilizeGesture(rawGesture);
-
-      if (!state.isModalOpen) {
-        // Handle interactions
-        if (gesture === 'index_finger') handleDrawing(landmarks);
-        if (gesture === 'open_palm') handleErasing(landmarks);
-        if (gesture === 'pinch') handleGrab(landmarks);
-        
-        // Finalize any in-progress stroke if not drawing
-        if (gesture !== 'index_finger' && state.currentStroke && state.currentStroke.points.length > 1) {
-          state.strokes.push({ ...state.currentStroke });
-          state.currentStroke = null;
-        }
-      }
-
-      // Render hand overlay
-      drawHandSkeleton(uiCtx, landmarks);
-      drawCursorIndicator(uiCtx, landmarks, gesture);
-    } else {
-      // No hand detected
-      if (state.currentGesture !== 'none') {
-        onGestureChange(state.currentGesture, 'none');
-        state.currentGesture = 'none';
-      }
-      if (state.currentStroke && state.currentStroke.points.length > 1) {
-        state.strokes.push({ ...state.currentStroke });
-        state.currentStroke = null;
-        redrawStrokes();
-      }
+    if (state.workerReady) {
+      requestWorkerDetection(video, now);
+    } else if (state.handLandmarker) {
+      const results = state.handLandmarker.detectForVideo(video, now);
+      processTrackingResult(results.landmarks || []);
     }
+  }
+
+  // Draw the latest hand result while inference runs off-thread.
+  if (state.latestLandmarks) {
+    const gesture = state.currentGesture;
+    drawHandSkeleton(uiCtx, state.latestLandmarks);
+    drawCursorIndicator(uiCtx, state.latestLandmarks, gesture);
   }
 
   // Update particles

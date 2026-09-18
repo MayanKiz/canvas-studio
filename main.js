@@ -41,6 +41,11 @@ const state = {
   height: 0,
   // Audio
   audioCtx: null,
+  // Performance
+  lastDetectionAt: 0,
+  lastRenderAt: 0,
+  latestLandmarks: null,
+  lowPower: (navigator.hardwareConcurrency || 4) <= 6,
 };
 
 // ── DOM Elements ───────────────────────────────────────────────
@@ -148,7 +153,7 @@ async function initMediaPipe() {
 // ── Webcam Setup ───────────────────────────────────────────────
 async function initWebcam() {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+    video: { width: { ideal: 640, max: 960 }, height: { ideal: 360, max: 540 }, frameRate: { ideal: 30, max: 30 }, facingMode: 'user' }
   });
   webcamEl.srcObject = stream;
   state.webcamStream = stream;
@@ -330,6 +335,8 @@ function handleDrawing(landmarks) {
     };
     state.smoothPos = { ...rawPos };
   } else {
+    const last = state.currentStroke.points[state.currentStroke.points.length - 1];
+    if (Math.hypot(pos.x - last.x, pos.y - last.y) < (state.lowPower ? 3 : 2)) return;
     state.currentStroke.points.push({ ...pos });
   }
 
@@ -533,8 +540,8 @@ function drawGlowStroke(ctx, stroke, isCurrentStroke = false) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // Pass 1: Outer glow
-  if (glowMult > 0) {
+  // Pass 1: Outer glow (skip the largest paint pass on low-power phones)
+  if (glowMult > 0 && !state.lowPower) {
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
@@ -549,7 +556,7 @@ function drawGlowStroke(ctx, stroke, isCurrentStroke = false) {
     ctx.lineWidth = width * 3;
     ctx.globalAlpha = 0.1 * glowMult;
     ctx.shadowColor = color;
-    ctx.shadowBlur = 35 * glowMult;
+    ctx.shadowBlur = 24 * glowMult;
     ctx.stroke();
   }
 
@@ -568,7 +575,7 @@ function drawGlowStroke(ctx, stroke, isCurrentStroke = false) {
     ctx.strokeStyle = color;
     ctx.lineWidth = width * 1.6;
     ctx.globalAlpha = 0.35 * glowMult;
-    ctx.shadowBlur = 15 * glowMult;
+    ctx.shadowBlur = 9 * glowMult;
     ctx.stroke();
   }
 
@@ -586,7 +593,7 @@ function drawGlowStroke(ctx, stroke, isCurrentStroke = false) {
   ctx.strokeStyle = lightenColor(color, 0.5);
   ctx.lineWidth = width;
   ctx.globalAlpha = 1;
-  ctx.shadowBlur = 6 * glowMult;
+    ctx.shadowBlur = 4 * glowMult;
   ctx.shadowColor = color;
   ctx.stroke();
 
@@ -702,7 +709,7 @@ function drawHandSkeleton(ctx, landmarks) {
     ctx.arc(pos.x, pos.y, 5, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
     ctx.shadowColor = '#ffffff';
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = state.lowPower ? 4 : 10;
     ctx.fill();
     ctx.shadowBlur = 0;
   }
@@ -745,6 +752,14 @@ function renderLoop() {
 
   const video = webcamEl;
   const now = performance.now();
+
+  // Keep camera inference and canvas work within a predictable phone-safe budget.
+  const frameInterval = state.lowPower ? 42 : 33;
+  if (now - state.lastRenderAt < frameInterval) {
+    requestAnimationFrame(renderLoop);
+    return;
+  }
+  state.lastRenderAt = now;
 
   // Draw camera feed
   cameraCtx.clearRect(0, 0, state.width, state.height);

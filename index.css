@@ -622,3 +622,23 @@ input[type="range"]:active::-webkit-slider-thumb {
     padding: 8px 16px;
   }
 }
+
+
+/* Phone performance path: preserve the glass look without stacking expensive GPU layers. */
+@media (pointer: coarse), (max-width: 700px) {
+  #gesture-hud,
+  #toolbar,
+  #camera-mode-indicator,
+  #onboarding-modal {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  #toolbar { box-shadow: 0 6px 22px rgba(0, 0, 0, .28); }
+  #gesture-hud { box-shadow: 0 4px 20px rgba(0, 0, 0, .24); }
+  .color-swatch:hover, .toolbar-btn:hover { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
